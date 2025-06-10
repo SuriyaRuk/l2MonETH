@@ -17,7 +17,7 @@ type BlockNumberResponse struct {
 	Result  string `json:"result"` // Block number as a hex string (e.g., "0x5B9AC0")
 }
 
-func getBlockNumber() (int64, error) {
+func getBlockNumber(rpcURL string) (int64, error) {
 	// JSON-RPC payload
 	currentTime := time.Now()
 	id := rand.Intn(100)
@@ -35,7 +35,7 @@ func getBlockNumber() (int64, error) {
 		return 0, err
 	}
 
-	rpc := os.Getenv("RPC")
+	rpc := rpcURL
 	if rpc == "" {
 		rpc = "http://127.0.0.1:8545"
 	}
@@ -87,7 +87,9 @@ type BlockResponse struct {
 }
 
 func checkSync(w http.ResponseWriter, r *http.Request) {
-	blockNumberFirst, err := getBlockNumber()
+	rpcURL := r.URL.Query().Get("rpc")
+	
+	blockNumberFirst, err := getBlockNumber(rpcURL)
 	if err != nil {
 		w.WriteHeader(500)
 		return
@@ -95,7 +97,7 @@ func checkSync(w http.ResponseWriter, r *http.Request) {
 
 	time.Sleep(30 * time.Second)
 
-	blockNumberSecond, err := getBlockNumber()
+	blockNumberSecond, err := getBlockNumber(rpcURL)
 	if err != nil {
 		w.WriteHeader(500)
 		return

@@ -21,7 +21,7 @@ struct BlockNumberResponse {
     result: String,
 }
 
-async fn get_block_number() -> Result<i64, Box<dyn std::error::Error>> {
+async fn get_block_number(rpc_url: Option<String>) -> Result<i64, Box<dyn std::error::Error>> {
     let current_time = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap()
@@ -36,7 +36,7 @@ async fn get_block_number() -> Result<i64, Box<dyn std::error::Error>> {
         id,
     };
 
-    let rpc = env::var("RPC").unwrap_or_else(|_| "http://127.0.0.1:8545".to_string());
+    let rpc = rpc_url.unwrap_or_else(|| "http://127.0.0.1:8545".to_string());
 
     let client = Client::new();
     let response = client
@@ -66,8 +66,8 @@ struct BlockResponse {
     status: String,
 }
 
-async fn check_sync() -> Result<impl warp::Reply, warp::Rejection> {
-    let block_number_first = match get_block_number().await {
+async fn check_sync(rpc_url: Option<String>) -> Result<impl warp::Reply, warp::Rejection> {
+    let block_number_first = match get_block_number(rpc_url.clone()).await {
         Ok(num) => num,
         Err(_) => {
             let error_response = BlockResponse {
@@ -81,7 +81,7 @@ async fn check_sync() -> Result<impl warp::Reply, warp::Rejection> {
 
     sleep(Duration::from_secs(30)).await;
 
-    let block_number_second = match get_block_number().await {
+    let block_number_second = match get_block_number(rpc_url).await {
         Ok(num) => num,
         Err(_) => {
             let error_response = BlockResponse {
@@ -118,7 +118,11 @@ async fn main() {
 
     let routes = warp::path::end()
         .and(warp::get())
-        .and_then(check_sync);
+        .and(warp::query::<std::collections::HashMap<String, String>>())
+        .and_then(|query_params: std::collections::HashMap<String, String>| {
+            let rpc_url = query_params.get("rpc").cloned();
+            check_sync(rpc_url)
+        });
 
     println!("Starting server on port {}", port);
 
