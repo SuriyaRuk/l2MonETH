@@ -1,0 +1,5 @@
+/Users/suriyasiangsai/works/chains/monitor/target/debug/deps/libheaders_core-9b4f748939334b15.rmeta: /Users/suriyasiangsai/.cargo/registry/src/index.crates.io-6f17d22bba15001f/headers-core-0.2.0/src/lib.rs
+
+/Users/suriyasiangsai/works/chains/monitor/target/debug/deps/headers_core-9b4f748939334b15.d: /Users/suriyasiangsai/.cargo/registry/src/index.crates.io-6f17d22bba15001f/headers-core-0.2.0/src/lib.rs
+
+/Users/suriyasiangsai/.cargo/registry/src/index.crates.io-6f17d22bba15001f/headers-core-0.2.0/src/lib.rs:
