@@ -381,3 +381,156 @@ async fn main() {
 
     warp::serve(routes).run(([0, 0, 0, 0], port)).await;
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use mockito::Server;
+
+    #[tokio::test]
+    async fn test_get_block_number_success() {
+        let mut server = Server::new_async().await;
+        let mock = server
+            .mock("POST", "/")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(r#"{"jsonrpc":"2.0","id":1,"result":"0x1a2b3c"}"#)
+            .create_async()
+            .await;
+
+        let result = get_block_number(Some(server.url())).await;
+        mock.assert_async().await;
+        
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), 0x1a2b3c);
+    }
+
+    #[tokio::test]
+    async fn test_get_block_number_error() {
+        let mut server = Server::new_async().await;
+        let mock = server
+            .mock("POST", "/")
+            .with_status(500)
+            .create_async()
+            .await;
+
+        let result = get_block_number(Some(server.url())).await;
+        mock.assert_async().await;
+        
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_get_block_by_tag_success() {
+        let mut server = Server::new_async().await;
+        let mock = server
+            .mock("POST", "/")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(r#"{"jsonrpc":"2.0","id":1,"result":{"number":"0xabcdef"}}"#)
+            .create_async()
+            .await;
+
+        let result = get_block_by_tag(Some(server.url()), "latest").await;
+        mock.assert_async().await;
+        
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), 0xabcdef);
+    }
+
+    #[tokio::test]
+    async fn test_get_block_by_tag_error() {
+        let mut server = Server::new_async().await;
+        let mock = server
+            .mock("POST", "/")
+            .with_status(500)
+            .create_async()
+            .await;
+
+        let result = get_block_by_tag(Some(server.url()), "latest").await;
+        mock.assert_async().await;
+        
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_get_balance_success() {
+        let mut server = Server::new_async().await;
+        let mock = server
+            .mock("POST", "/")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(r#"{"jsonrpc":"2.0","id":1,"result":"0xde0b6b3a7640000"}"#)
+            .create_async()
+            .await;
+
+        let result = get_balance(Some(server.url()), "0x123456789".to_string()).await;
+        mock.assert_async().await;
+        
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), 1000000000000000000u128);
+    }
+
+    #[tokio::test]
+    async fn test_get_balance_error() {
+        let mut server = Server::new_async().await;
+        let mock = server
+            .mock("POST", "/")
+            .with_status(500)
+            .create_async()
+            .await;
+
+        let result = get_balance(Some(server.url()), "0x123456789".to_string()).await;
+        mock.assert_async().await;
+        
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_rpc_request_serialization() {
+        let request = RpcRequest {
+            jsonrpc: "2.0".to_string(),
+            method: "eth_blockNumber".to_string(),
+            params: vec![],
+            id: 1,
+        };
+        
+        let json = serde_json::to_string(&request).unwrap();
+        assert!(json.contains("eth_blockNumber"));
+        assert!(json.contains("2.0"));
+    }
+
+    #[test]
+    fn test_block_number_response_deserialization() {
+        let json = r#"{"jsonrpc":"2.0","id":1,"result":"0x123"}"#;
+        let response: BlockNumberResponse = serde_json::from_str(json).unwrap();
+        
+        assert_eq!(response.jsonrpc, "2.0");
+        assert_eq!(response.id, 1);
+        assert_eq!(response.result, "0x123");
+    }
+
+    #[test]
+    fn test_balance_response_deserialization() {
+        let json = r#"{"jsonrpc":"2.0","id":1,"result":"0xde0b6b3a7640000"}"#;
+        let response: BalanceResponse = serde_json::from_str(json).unwrap();
+        
+        assert_eq!(response.jsonrpc, "2.0");
+        assert_eq!(response.id, 1);
+        assert_eq!(response.result, "0xde0b6b3a7640000");
+    }
+
+    #[test]
+    fn test_block_response_serialization() {
+        let response = BlockResponse {
+            block_number_hex: "0x123".to_string(),
+            block_number_decimal: 291,
+            status: "synced".to_string(),
+        };
+        
+        let json = serde_json::to_string(&response).unwrap();
+        assert!(json.contains("0x123"));
+        assert!(json.contains("291"));
+        assert!(json.contains("synced"));
+    }
+}

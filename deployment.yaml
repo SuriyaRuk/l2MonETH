@@ -1,0 +1,52 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: blockchain-monitor
+  labels:
+    app: blockchain-monitor
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: blockchain-monitor
+  template:
+    metadata:
+      labels:
+        app: blockchain-monitor
+    spec:
+      containers:
+      - name: monitor
+        image: blockchain-monitor:latest
+        ports:
+        - containerPort: 9999
+        env:
+        - name: PORT
+          value: "9999"
+          #        resources:
+          #          requests:
+          #            memory: "128Mi"
+          #            cpu: "100m"
+          #          limits:
+          #            memory: "256Mi"
+          #            cpu: "200m"
+            #        livenessProbe:
+            #          httpGet:
+            #            path: /
+            #            port: 9999
+            #            httpHeaders:
+            #            - name: rpc
+            #              value: "http://127.0.0.1:8545"
+            #          initialDelaySeconds: 30
+            #          periodSeconds: 60
+            #          timeoutSeconds: 35
+            #        readinessProbe:
+            #          httpGet:
+            #            path: /
+            #            port: 9999
+            #            httpHeaders:
+            #            - name: rpc
+            #              value: "http://127.0.0.1:8545"
+            #          initialDelaySeconds: 5
+            #          periodSeconds: 10
+            #          timeoutSeconds: 35
+      restartPolicy: Always
