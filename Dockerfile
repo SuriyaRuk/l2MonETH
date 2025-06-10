@@ -5,7 +5,7 @@ FROM rust:1.82 AS builder
 WORKDIR /app
 
 # Copy Cargo files for dependency caching
-COPY Cargo.toml Cargo.lock ./
+COPY Cargo.toml  ./
 
 # Copy source code
 COPY src/ ./src/
