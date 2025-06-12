@@ -326,7 +326,7 @@ async fn check_balance(
         },
     };
 
-    if alert_threshold < balance {
+    if alert_threshold > balance {
         Ok(warp::reply::with_status(
             warp::reply::json(&response),
             warp::http::StatusCode::INTERNAL_SERVER_ERROR,
@@ -400,7 +400,7 @@ mod tests {
 
         let result = get_block_number(Some(server.url())).await;
         mock.assert_async().await;
-        
+
         assert!(result.is_ok());
         assert_eq!(result.unwrap(), 0x1a2b3c);
     }
@@ -416,7 +416,7 @@ mod tests {
 
         let result = get_block_number(Some(server.url())).await;
         mock.assert_async().await;
-        
+
         assert!(result.is_err());
     }
 
@@ -433,7 +433,7 @@ mod tests {
 
         let result = get_block_by_tag(Some(server.url()), "latest").await;
         mock.assert_async().await;
-        
+
         assert!(result.is_ok());
         assert_eq!(result.unwrap(), 0xabcdef);
     }
@@ -449,7 +449,7 @@ mod tests {
 
         let result = get_block_by_tag(Some(server.url()), "latest").await;
         mock.assert_async().await;
-        
+
         assert!(result.is_err());
     }
 
@@ -466,7 +466,7 @@ mod tests {
 
         let result = get_balance(Some(server.url()), "0x123456789".to_string()).await;
         mock.assert_async().await;
-        
+
         assert!(result.is_ok());
         assert_eq!(result.unwrap(), 1000000000000000000u128);
     }
@@ -482,7 +482,7 @@ mod tests {
 
         let result = get_balance(Some(server.url()), "0x123456789".to_string()).await;
         mock.assert_async().await;
-        
+
         assert!(result.is_err());
     }
 
@@ -494,7 +494,7 @@ mod tests {
             params: vec![],
             id: 1,
         };
-        
+
         let json = serde_json::to_string(&request).unwrap();
         assert!(json.contains("eth_blockNumber"));
         assert!(json.contains("2.0"));
@@ -504,7 +504,7 @@ mod tests {
     fn test_block_number_response_deserialization() {
         let json = r#"{"jsonrpc":"2.0","id":1,"result":"0x123"}"#;
         let response: BlockNumberResponse = serde_json::from_str(json).unwrap();
-        
+
         assert_eq!(response.jsonrpc, "2.0");
         assert_eq!(response.id, 1);
         assert_eq!(response.result, "0x123");
@@ -514,7 +514,7 @@ mod tests {
     fn test_balance_response_deserialization() {
         let json = r#"{"jsonrpc":"2.0","id":1,"result":"0xde0b6b3a7640000"}"#;
         let response: BalanceResponse = serde_json::from_str(json).unwrap();
-        
+
         assert_eq!(response.jsonrpc, "2.0");
         assert_eq!(response.id, 1);
         assert_eq!(response.result, "0xde0b6b3a7640000");
@@ -527,7 +527,7 @@ mod tests {
             block_number_decimal: 291,
             status: "synced".to_string(),
         };
-        
+
         let json = serde_json::to_string(&response).unwrap();
         assert!(json.contains("0x123"));
         assert!(json.contains("291"));
