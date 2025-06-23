@@ -1,0 +1,10 @@
+version: '3.8'
+
+services:
+  l2moneth:
+    image: ghcr.io/suriyaruk/l2moneth:main
+    restart: always
+    environment: 
+      - PORT=3000
+    ports:
+      - 3000:3000
