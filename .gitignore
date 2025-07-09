@@ -30,3 +30,6 @@ go.sum
 .Trashes
 ehthumbs.db
 Thumbs.db
+
+# Kuma monitoring data
+kuma-data/
