@@ -1,0 +1,13 @@
+
+services:
+  kuma:
+    image: louislam/uptime-kuma:latest
+    container_name: kuma
+    restart: always
+    ports:
+      - "3001:3001"
+    volumes:
+      - ./kuma-data:/app/data
+    environment:
+      - PUID=1000
+      - PGID=1000
