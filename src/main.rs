@@ -5,6 +5,9 @@ use std::env;
 use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::time::{sleep, Duration};
 use warp::Filter;
+use num_bigint::BigUint;
+use num_traits::Num;
+use std::str::FromStr;
 
 #[derive(Serialize)]
 struct RpcRequest {
@@ -136,8 +139,8 @@ struct BalanceResponse {
 struct CheckBalanceResponse {
     address: String,
     balance: String,
-    balance_decimal: u128,
-    alert_threshold: u128,
+    balance_decimal: String,
+    alert_threshold: String,
     status: String,
 }
 
@@ -264,7 +267,7 @@ async fn finalized_latest_diff(
 async fn get_balance(
     rpc_url: Option<String>,
     address: String,
-) -> Result<u128, Box<dyn std::error::Error>> {
+) -> Result<BigUint, Box<dyn std::error::Error>> {
     let id = rand::thread_rng().gen_range(1..=100);
 
     let payload = RpcRequest {
@@ -285,7 +288,8 @@ async fn get_balance(
     let body = response.text().await?;
     let balance_response: BalanceResponse = serde_json::from_str(&body)?;
 
-    let balance = u128::from_str_radix(&balance_response.result[2..], 16)?;
+    let balance = BigUint::from_str_radix(&balance_response.result[2..], 16)
+        .map_err(|e| format!("Failed to parse balance hex: {}", e))?;
 
     Ok(balance)
 }
@@ -293,17 +297,17 @@ async fn get_balance(
 async fn check_balance(
     rpc_url: Option<String>,
     address: String,
-    alert: Option<u128>,
+    alert: Option<String>,
 ) -> Result<impl warp::Reply, warp::Rejection> {
     let balance = match get_balance(rpc_url, address.clone()).await {
         Ok(bal) => bal,
-        Err(_) => {
+        Err(e) => {
             let error_response = CheckBalanceResponse {
                 address: address.clone(),
                 balance: "0x0".to_string(),
-                balance_decimal: 0,
-                alert_threshold: alert.unwrap_or(0),
-                status: "error".to_string(),
+                balance_decimal: "0".to_string(),
+                alert_threshold: alert.unwrap_or("0".to_string()),
+                status: format!("error: {}", e),
             };
             return Ok(warp::reply::with_status(
                 warp::reply::json(&error_response),
@@ -312,13 +316,16 @@ async fn check_balance(
         }
     };
 
-    let alert_threshold = alert.unwrap_or(0);
+    let alert_threshold = match alert {
+        Some(a) => BigUint::from_str(&a).unwrap_or_else(|_| BigUint::from(0u32)),
+        None => BigUint::from(0u32),
+    };
 
     let response = CheckBalanceResponse {
         address: address.clone(),
         balance: format!("0x{:x}", balance),
-        balance_decimal: balance,
-        alert_threshold,
+        balance_decimal: balance.to_string(),
+        alert_threshold: alert_threshold.to_string(),
         status: if alert_threshold < balance {
             "balance_sufficient".to_string()
         } else {
@@ -369,9 +376,7 @@ async fn main() {
         .and_then(|query_params: std::collections::HashMap<String, String>| {
             let rpc_url = query_params.get("rpc").cloned();
             let address = query_params.get("address").cloned().unwrap_or_default();
-            let alert = query_params
-                .get("alert")
-                .and_then(|a| a.parse::<u128>().ok());
+            let alert = query_params.get("alert").cloned();
             check_balance(rpc_url, address, alert)
         });
 
@@ -468,7 +473,7 @@ mod tests {
         mock.assert_async().await;
 
         assert!(result.is_ok());
-        assert_eq!(result.unwrap(), 1000000000000000000u128);
+        assert_eq!(result.unwrap(), BigUint::from(1000000000000000000u128));
     }
 
     #[tokio::test]
@@ -532,5 +537,29 @@ mod tests {
         assert!(json.contains("0x123"));
         assert!(json.contains("291"));
         assert!(json.contains("synced"));
+    }
+
+    #[test]
+    fn test_large_balance_parsing() {
+        let large_hex = "204fce5e3e25026110000000";
+        let result = BigUint::from_str_radix(large_hex, 16);
+        assert!(result.is_ok());
+        let balance = result.unwrap();
+        let balance_str = balance.to_string();
+        assert!(balance_str.len() > 20);
+    }
+
+    #[test]
+    fn test_check_balance_response_with_large_values() {
+        let response = CheckBalanceResponse {
+            address: "0x123456789".to_string(),
+            balance: "0x204fce5e3e25026110000000".to_string(),
+            balance_decimal: "99999999999999999999999999999999999999".to_string(),
+            alert_threshold: "1000000000000000000".to_string(),
+            status: "balance_sufficient".to_string(),
+        };
+
+        let json = serde_json::to_string(&response).unwrap();
+        assert!(json.contains("99999999999999999999999999999999999999"));
     }
 }
