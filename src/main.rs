@@ -333,7 +333,9 @@ async fn check_balance(
         },
     };
 
-    if alert_threshold > balance {
+    // Must mirror the `status` field above: "balance_low" (alert_threshold >= balance)
+    // maps to an error status so monitors keying off the HTTP code alert at the threshold.
+    if alert_threshold >= balance {
         Ok(warp::reply::with_status(
             warp::reply::json(&response),
             warp::http::StatusCode::INTERNAL_SERVER_ERROR,
