@@ -155,7 +155,10 @@ struct RpcError {
 #[derive(Deserialize)]
 struct BalanceResponse {
     jsonrpc: String,
-    id: u32,
+    // JSON-RPC 2.0 allows a null `id` on error responses (e.g. parse errors raised
+    // before the request id is read), so this must be optional or deserialization
+    // fails and the actual RPC error never surfaces.
+    id: Option<u32>,
     result: Option<String>,
     #[serde(default)]
     error: Option<RpcError>,
@@ -290,6 +293,8 @@ async fn finalized_latest_diff(
     }
 }
 
+/// Fetch an address balance (in wei) via the `eth_getBalance` JSON-RPC call.
+/// Returns an error carrying the node's message when the RPC replies with an error object.
 async fn get_balance(
     rpc_url: Option<String>,
     address: String,
@@ -329,6 +334,9 @@ async fn get_balance(
     Ok(balance)
 }
 
+/// HTTP handler for `/check_balance`. Validates the address and alert threshold,
+/// fetches the balance, and returns 200 when the balance is above the threshold or
+/// 500 (`balance_low`) when it is at or below it, so monitors can key off the status code.
 async fn check_balance(
     rpc_url: Option<String>,
     address: String,
@@ -696,9 +704,29 @@ mod tests {
         let response: BalanceResponse = serde_json::from_str(json).unwrap();
 
         assert_eq!(response.jsonrpc, "2.0");
-        assert_eq!(response.id, 1);
+        assert_eq!(response.id, Some(1));
         assert_eq!(response.result.as_deref(), Some("0xde0b6b3a7640000"));
         assert!(response.error.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_get_balance_rpc_error_with_null_id_surfaced() {
+        // JSON-RPC parse/invalid-request errors carry `id: null`; the error must
+        // still deserialize and surface rather than failing on the null id.
+        let mut server = Server::new_async().await;
+        let mock = server
+            .mock("POST", "/")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(r#"{"jsonrpc":"2.0","id":null,"error":{"code":-32700,"message":"parse error"}}"#)
+            .create_async()
+            .await;
+
+        let result = get_balance(Some(server.url()), "0x123456789".to_string()).await;
+        mock.assert_async().await;
+
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("parse error"));
     }
 
     #[tokio::test]
