@@ -562,6 +562,83 @@ mod tests {
         assert!(result.is_err());
     }
 
+    // 0xde0b6b3a7640000 == 1_000_000_000_000_000_000 (1 ETH in wei)
+    const ONE_ETH_HEX_BODY: &str = r#"{"jsonrpc":"2.0","id":1,"result":"0xde0b6b3a7640000"}"#;
+    const VALID_ADDRESS: &str = "0x0000000000000000000000000000000000000001";
+
+    async fn balance_status(alert: &str) -> warp::http::StatusCode {
+        use warp::Reply;
+        let mut server = Server::new_async().await;
+        server
+            .mock("POST", "/")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(ONE_ETH_HEX_BODY)
+            .create_async()
+            .await;
+
+        check_balance(
+            Some(server.url()),
+            VALID_ADDRESS.to_string(),
+            Some(alert.to_string()),
+        )
+        .await
+        .unwrap()
+        .into_response()
+        .status()
+    }
+
+    #[tokio::test]
+    async fn test_check_balance_at_threshold_returns_error() {
+        // balance == threshold must be treated as low (HTTP 500), matching the body.
+        assert_eq!(
+            balance_status("1000000000000000000").await,
+            warp::http::StatusCode::INTERNAL_SERVER_ERROR
+        );
+    }
+
+    #[tokio::test]
+    async fn test_check_balance_above_threshold_returns_ok() {
+        assert_eq!(
+            balance_status("999999999999999999").await,
+            warp::http::StatusCode::OK
+        );
+    }
+
+    #[tokio::test]
+    async fn test_check_balance_below_threshold_returns_error() {
+        assert_eq!(
+            balance_status("1000000000000000001").await,
+            warp::http::StatusCode::INTERNAL_SERVER_ERROR
+        );
+    }
+
+    #[tokio::test]
+    async fn test_check_balance_invalid_address_returns_bad_request() {
+        use warp::Reply;
+        let status = check_balance(None, "not-an-address".to_string(), None)
+            .await
+            .unwrap()
+            .into_response()
+            .status();
+        assert_eq!(status, warp::http::StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn test_check_balance_invalid_alert_returns_bad_request() {
+        use warp::Reply;
+        let status = check_balance(
+            None,
+            VALID_ADDRESS.to_string(),
+            Some("not-a-number".to_string()),
+        )
+        .await
+        .unwrap()
+        .into_response()
+        .status();
+        assert_eq!(status, warp::http::StatusCode::BAD_REQUEST);
+    }
+
     #[test]
     fn test_rpc_request_serialization() {
         let request = RpcRequest {
