@@ -299,6 +299,28 @@ async fn check_balance(
     address: String,
     alert: Option<String>,
 ) -> Result<impl warp::Reply, warp::Rejection> {
+    // Parse the alert threshold before doing any work. A malformed value must be
+    // rejected loudly — silently defaulting to 0 would permanently disable the alert.
+    let alert_threshold = match &alert {
+        Some(a) => match BigUint::from_str(a) {
+            Ok(t) => t,
+            Err(_) => {
+                let error_response = CheckBalanceResponse {
+                    address: address.clone(),
+                    balance: "0x0".to_string(),
+                    balance_decimal: "0".to_string(),
+                    alert_threshold: a.clone(),
+                    status: format!("error: invalid alert threshold '{}'", a),
+                };
+                return Ok(warp::reply::with_status(
+                    warp::reply::json(&error_response),
+                    warp::http::StatusCode::BAD_REQUEST,
+                ));
+            }
+        },
+        None => BigUint::from(0u32),
+    };
+
     let balance = match get_balance(rpc_url, address.clone()).await {
         Ok(bal) => bal,
         Err(e) => {
@@ -306,7 +328,7 @@ async fn check_balance(
                 address: address.clone(),
                 balance: "0x0".to_string(),
                 balance_decimal: "0".to_string(),
-                alert_threshold: alert.unwrap_or("0".to_string()),
+                alert_threshold: alert_threshold.to_string(),
                 status: format!("error: {}", e),
             };
             return Ok(warp::reply::with_status(
@@ -314,11 +336,6 @@ async fn check_balance(
                 warp::http::StatusCode::INTERNAL_SERVER_ERROR,
             ));
         }
-    };
-
-    let alert_threshold = match alert {
-        Some(a) => BigUint::from_str(&a).unwrap_or_else(|_| BigUint::from(0u32)),
-        None => BigUint::from(0u32),
     };
 
     let response = CheckBalanceResponse {
