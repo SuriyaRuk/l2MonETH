@@ -147,10 +147,18 @@ struct BlockDiffResponse {
 }
 
 #[derive(Deserialize)]
+struct RpcError {
+    code: i64,
+    message: String,
+}
+
+#[derive(Deserialize)]
 struct BalanceResponse {
     jsonrpc: String,
     id: u32,
-    result: String,
+    result: Option<String>,
+    #[serde(default)]
+    error: Option<RpcError>,
 }
 
 #[derive(Serialize)]
@@ -306,7 +314,16 @@ async fn get_balance(
     let body = response.text().await?;
     let balance_response: BalanceResponse = serde_json::from_str(&body)?;
 
-    let balance = BigUint::from_str_radix(strip_hex_prefix(&balance_response.result), 16)
+    // Surface the node's JSON-RPC error rather than a generic "missing field" serde error.
+    if let Some(err) = balance_response.error {
+        return Err(format!("RPC error {}: {}", err.code, err.message).into());
+    }
+
+    let result = balance_response
+        .result
+        .ok_or("RPC response contained neither result nor error")?;
+
+    let balance = BigUint::from_str_radix(strip_hex_prefix(&result), 16)
         .map_err(|e| format!("Failed to parse balance hex: {}", e))?;
 
     Ok(balance)
@@ -576,7 +593,28 @@ mod tests {
 
         assert_eq!(response.jsonrpc, "2.0");
         assert_eq!(response.id, 1);
-        assert_eq!(response.result, "0xde0b6b3a7640000");
+        assert_eq!(response.result.as_deref(), Some("0xde0b6b3a7640000"));
+        assert!(response.error.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_get_balance_rpc_error_surfaced() {
+        let mut server = Server::new_async().await;
+        let mock = server
+            .mock("POST", "/")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(
+                r#"{"jsonrpc":"2.0","id":1,"error":{"code":-32000,"message":"invalid address"}}"#,
+            )
+            .create_async()
+            .await;
+
+        let result = get_balance(Some(server.url()), "0x123456789".to_string()).await;
+        mock.assert_async().await;
+
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("invalid address"));
     }
 
     #[test]
