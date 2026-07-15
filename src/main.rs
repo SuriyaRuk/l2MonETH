@@ -567,25 +567,52 @@ mod tests {
     const VALID_ADDRESS: &str = "0x0000000000000000000000000000000000000001";
 
     async fn balance_status(alert: &str) -> warp::http::StatusCode {
+        balance_status_with_body(ONE_ETH_HEX_BODY, Some(alert)).await
+    }
+
+    async fn balance_status_with_body(
+        body: &str,
+        alert: Option<&str>,
+    ) -> warp::http::StatusCode {
         use warp::Reply;
         let mut server = Server::new_async().await;
         server
             .mock("POST", "/")
             .with_status(200)
             .with_header("content-type", "application/json")
-            .with_body(ONE_ETH_HEX_BODY)
+            .with_body(body)
             .create_async()
             .await;
 
         check_balance(
             Some(server.url()),
             VALID_ADDRESS.to_string(),
-            Some(alert.to_string()),
+            alert.map(|a| a.to_string()),
         )
         .await
         .unwrap()
         .into_response()
         .status()
+    }
+
+    #[tokio::test]
+    async fn test_check_balance_zero_balance_default_threshold_returns_error() {
+        // Account with no balance and no alert param (threshold defaults to 0):
+        // must NOT return 200. balance 0 <= threshold 0 => balance_low => 500.
+        let body = r#"{"jsonrpc":"2.0","id":1,"result":"0x0"}"#;
+        assert_eq!(
+            balance_status_with_body(body, None).await,
+            warp::http::StatusCode::INTERNAL_SERVER_ERROR
+        );
+    }
+
+    #[tokio::test]
+    async fn test_check_balance_zero_balance_with_threshold_returns_error() {
+        let body = r#"{"jsonrpc":"2.0","id":1,"result":"0x0"}"#;
+        assert_eq!(
+            balance_status_with_body(body, Some("1000000000000000000")).await,
+            warp::http::StatusCode::INTERNAL_SERVER_ERROR
+        );
     }
 
     #[tokio::test]
