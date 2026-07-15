@@ -786,4 +786,255 @@ mod tests {
         let json = serde_json::to_string(&response).unwrap();
         assert!(json.contains("99999999999999999999999999999999999999"));
     }
+
+    // --- strip_hex_prefix ---
+
+    #[test]
+    fn test_strip_hex_prefix_lowercase() {
+        assert_eq!(strip_hex_prefix("0xabc123"), "abc123");
+    }
+
+    #[test]
+    fn test_strip_hex_prefix_uppercase_marker() {
+        assert_eq!(strip_hex_prefix("0Xabc123"), "abc123");
+    }
+
+    #[test]
+    fn test_strip_hex_prefix_no_prefix_returns_unchanged() {
+        assert_eq!(strip_hex_prefix("abc123"), "abc123");
+    }
+
+    #[test]
+    fn test_strip_hex_prefix_empty_string_no_panic() {
+        assert_eq!(strip_hex_prefix(""), "");
+    }
+
+    #[test]
+    fn test_strip_hex_prefix_single_char_no_panic() {
+        // Regression: the old `s[2..]` slice panicked on any string shorter
+        // than two bytes. A single character without a prefix must be
+        // returned as-is rather than panicking.
+        assert_eq!(strip_hex_prefix("5"), "5");
+    }
+
+    #[test]
+    fn test_strip_hex_prefix_just_prefix() {
+        assert_eq!(strip_hex_prefix("0x"), "");
+    }
+
+    // --- is_valid_eth_address ---
+
+    #[test]
+    fn test_is_valid_eth_address_valid_lowercase() {
+        assert!(is_valid_eth_address(
+            "0x0000000000000000000000000000000000000001"
+        ));
+    }
+
+    #[test]
+    fn test_is_valid_eth_address_valid_mixed_case_checksum() {
+        assert!(is_valid_eth_address(
+            "0xAbC1230000000000000000000000000000000a"
+        ));
+    }
+
+    #[test]
+    fn test_is_valid_eth_address_valid_uppercase_prefix() {
+        assert!(is_valid_eth_address(
+            "0X0000000000000000000000000000000000000001"
+        ));
+    }
+
+    #[test]
+    fn test_is_valid_eth_address_missing_prefix() {
+        assert!(!is_valid_eth_address(
+            "0000000000000000000000000000000000000001"
+        ));
+    }
+
+    #[test]
+    fn test_is_valid_eth_address_too_short() {
+        assert!(!is_valid_eth_address("0x0001"));
+    }
+
+    #[test]
+    fn test_is_valid_eth_address_too_long() {
+        assert!(!is_valid_eth_address(
+            "0x00000000000000000000000000000000000000011"
+        ));
+    }
+
+    #[test]
+    fn test_is_valid_eth_address_non_hex_chars() {
+        assert!(!is_valid_eth_address(
+            "0xg000000000000000000000000000000000000001"
+        ));
+    }
+
+    #[test]
+    fn test_is_valid_eth_address_empty_string() {
+        assert!(!is_valid_eth_address(""));
+    }
+
+    #[test]
+    fn test_is_valid_eth_address_only_prefix() {
+        assert!(!is_valid_eth_address("0x"));
+    }
+
+    // --- RpcError / BalanceResponse edge cases ---
+
+    #[test]
+    fn test_rpc_error_deserialization() {
+        let json = r#"{"code":-32700,"message":"parse error"}"#;
+        let error: RpcError = serde_json::from_str(json).unwrap();
+        assert_eq!(error.code, -32700);
+        assert_eq!(error.message, "parse error");
+    }
+
+    #[test]
+    fn test_balance_response_deserialization_null_id_with_error() {
+        let json = r#"{"jsonrpc":"2.0","id":null,"error":{"code":-32000,"message":"boom"}}"#;
+        let response: BalanceResponse = serde_json::from_str(json).unwrap();
+
+        assert_eq!(response.id, None);
+        assert!(response.result.is_none());
+        let error = response.error.unwrap();
+        assert_eq!(error.code, -32000);
+        assert_eq!(error.message, "boom");
+    }
+
+    #[test]
+    fn test_balance_response_deserialization_missing_result_and_error() {
+        // Neither field present but deserialization must still succeed since
+        // both are optional; the caller surfaces this via get_balance's
+        // "neither result nor error" fallback.
+        let json = r#"{"jsonrpc":"2.0","id":1}"#;
+        let response: BalanceResponse = serde_json::from_str(json).unwrap();
+
+        assert_eq!(response.id, Some(1));
+        assert!(response.result.is_none());
+        assert!(response.error.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_get_balance_error_takes_priority_over_result() {
+        // If a node ever returns both `result` and `error`, the error must
+        // still be surfaced rather than silently returning a balance.
+        let mut server = Server::new_async().await;
+        let mock = server
+            .mock("POST", "/")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(
+                r#"{"jsonrpc":"2.0","id":1,"result":"0x1","error":{"code":-32000,"message":"conflict"}}"#,
+            )
+            .create_async()
+            .await;
+
+        let result = get_balance(Some(server.url()), "0x123456789".to_string()).await;
+        mock.assert_async().await;
+
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("conflict"));
+    }
+
+    #[tokio::test]
+    async fn test_get_balance_missing_result_and_error_returns_err() {
+        let mut server = Server::new_async().await;
+        let mock = server
+            .mock("POST", "/")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(r#"{"jsonrpc":"2.0","id":1}"#)
+            .create_async()
+            .await;
+
+        let result = get_balance(Some(server.url()), "0x123456789".to_string()).await;
+        mock.assert_async().await;
+
+        assert!(result.is_err());
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("neither result nor error"));
+    }
+
+    #[tokio::test]
+    async fn test_get_balance_empty_result_does_not_panic() {
+        // Regression: an empty `result` string must produce a parse error,
+        // not panic on a slicing operation.
+        let mut server = Server::new_async().await;
+        let mock = server
+            .mock("POST", "/")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(r#"{"jsonrpc":"2.0","id":1,"result":""}"#)
+            .create_async()
+            .await;
+
+        let result = get_balance(Some(server.url()), "0x123456789".to_string()).await;
+        mock.assert_async().await;
+
+        assert!(result.is_err());
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("Failed to parse balance hex"));
+    }
+
+    #[tokio::test]
+    async fn test_get_block_number_single_char_result_does_not_panic() {
+        // Regression: a hex result shorter than 2 bytes (and without a "0x"
+        // prefix) used to panic when slicing `result[2..]`.
+        let mut server = Server::new_async().await;
+        let mock = server
+            .mock("POST", "/")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(r#"{"jsonrpc":"2.0","id":1,"result":"5"}"#)
+            .create_async()
+            .await;
+
+        let result = get_block_number(Some(server.url())).await;
+        mock.assert_async().await;
+
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), 5);
+    }
+
+    #[tokio::test]
+    async fn test_check_balance_accepts_mixed_case_address() {
+        use warp::Reply;
+        let mut server = Server::new_async().await;
+        server
+            .mock("POST", "/")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(ONE_ETH_HEX_BODY)
+            .create_async()
+            .await;
+
+        let status = check_balance(
+            Some(server.url()),
+            "0xAbC1230000000000000000000000000000000a".to_string(),
+            Some("1".to_string()),
+        )
+        .await
+        .unwrap()
+        .into_response()
+        .status();
+
+        assert_eq!(status, warp::http::StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn test_check_balance_missing_address_returns_bad_request() {
+        use warp::Reply;
+        let status = check_balance(None, "".to_string(), None)
+            .await
+            .unwrap()
+            .into_response()
+            .status();
+        assert_eq!(status, warp::http::StatusCode::BAD_REQUEST);
+    }
 }
