@@ -9,6 +9,24 @@ use num_bigint::BigUint;
 use num_traits::Num;
 use std::str::FromStr;
 
+/// Strip an optional hex prefix from a hex string without panicking.
+/// Slicing `s[2..]` blindly panics when the RPC returns a value shorter than
+/// two bytes (e.g. an empty string or a single digit); this handles that safely.
+fn strip_hex_prefix(s: &str) -> &str {
+    s.strip_prefix("0x")
+        .or_else(|| s.strip_prefix("0X"))
+        .unwrap_or(s)
+}
+
+/// Validate an Ethereum address: `0x` followed by exactly 40 hex digits.
+fn is_valid_eth_address(address: &str) -> bool {
+    let hex = match address.strip_prefix("0x").or_else(|| address.strip_prefix("0X")) {
+        Some(h) => h,
+        None => return false,
+    };
+    hex.len() == 40 && hex.chars().all(|c| c.is_ascii_hexdigit())
+}
+
 #[derive(Serialize)]
 struct RpcRequest {
     jsonrpc: String,
@@ -52,7 +70,7 @@ async fn get_block_number(rpc_url: Option<String>) -> Result<i64, Box<dyn std::e
         current_time, id, block_response.result
     );
 
-    let block_number = i64::from_str_radix(&block_response.result[2..], 16)?;
+    let block_number = i64::from_str_radix(strip_hex_prefix(&block_response.result), 16)?;
 
     println!(
         "currentTime: {} ID {} Block Number (Decimal): {}",
@@ -98,7 +116,7 @@ async fn get_block_by_tag(
                 current_time, id, tag, number_hex
             );
 
-            let block_number = i64::from_str_radix(&number_hex[2..], 16)?;
+            let block_number = i64::from_str_radix(strip_hex_prefix(number_hex), 16)?;
 
             println!(
                 "currentTime: {} ID {} Block {} Number (Decimal): {}",
@@ -129,10 +147,21 @@ struct BlockDiffResponse {
 }
 
 #[derive(Deserialize)]
+struct RpcError {
+    code: i64,
+    message: String,
+}
+
+#[derive(Deserialize)]
 struct BalanceResponse {
     jsonrpc: String,
-    id: u32,
-    result: String,
+    // JSON-RPC 2.0 allows a null `id` on error responses (e.g. parse errors raised
+    // before the request id is read), so this must be optional or deserialization
+    // fails and the actual RPC error never surfaces.
+    id: Option<u32>,
+    result: Option<String>,
+    #[serde(default)]
+    error: Option<RpcError>,
 }
 
 #[derive(Serialize)]
@@ -264,6 +293,8 @@ async fn finalized_latest_diff(
     }
 }
 
+/// Fetch an address balance (in wei) via the `eth_getBalance` JSON-RPC call.
+/// Returns an error carrying the node's message when the RPC replies with an error object.
 async fn get_balance(
     rpc_url: Option<String>,
     address: String,
@@ -288,17 +319,68 @@ async fn get_balance(
     let body = response.text().await?;
     let balance_response: BalanceResponse = serde_json::from_str(&body)?;
 
-    let balance = BigUint::from_str_radix(&balance_response.result[2..], 16)
+    // Surface the node's JSON-RPC error rather than a generic "missing field" serde error.
+    if let Some(err) = balance_response.error {
+        return Err(format!("RPC error {}: {}", err.code, err.message).into());
+    }
+
+    let result = balance_response
+        .result
+        .ok_or("RPC response contained neither result nor error")?;
+
+    let balance = BigUint::from_str_radix(strip_hex_prefix(&result), 16)
         .map_err(|e| format!("Failed to parse balance hex: {}", e))?;
 
     Ok(balance)
 }
 
+/// HTTP handler for `/check_balance`. Validates the address and alert threshold,
+/// fetches the balance, and returns 200 when the balance is above the threshold or
+/// 500 (`balance_low`) when it is at or below it, so monitors can key off the status code.
 async fn check_balance(
     rpc_url: Option<String>,
     address: String,
     alert: Option<String>,
 ) -> Result<impl warp::Reply, warp::Rejection> {
+    // Reject a missing or malformed address up front rather than forwarding it to
+    // the RPC node and surfacing an opaque deserialization error.
+    if !is_valid_eth_address(&address) {
+        let error_response = CheckBalanceResponse {
+            address: address.clone(),
+            balance: "0x0".to_string(),
+            balance_decimal: "0".to_string(),
+            alert_threshold: alert.clone().unwrap_or_else(|| "0".to_string()),
+            status: "error: invalid or missing address (expected 0x + 40 hex digits)"
+                .to_string(),
+        };
+        return Ok(warp::reply::with_status(
+            warp::reply::json(&error_response),
+            warp::http::StatusCode::BAD_REQUEST,
+        ));
+    }
+
+    // Parse the alert threshold before doing any work. A malformed value must be
+    // rejected loudly — silently defaulting to 0 would permanently disable the alert.
+    let alert_threshold = match &alert {
+        Some(a) => match BigUint::from_str(a) {
+            Ok(t) => t,
+            Err(_) => {
+                let error_response = CheckBalanceResponse {
+                    address: address.clone(),
+                    balance: "0x0".to_string(),
+                    balance_decimal: "0".to_string(),
+                    alert_threshold: a.clone(),
+                    status: format!("error: invalid alert threshold '{}'", a),
+                };
+                return Ok(warp::reply::with_status(
+                    warp::reply::json(&error_response),
+                    warp::http::StatusCode::BAD_REQUEST,
+                ));
+            }
+        },
+        None => BigUint::from(0u32),
+    };
+
     let balance = match get_balance(rpc_url, address.clone()).await {
         Ok(bal) => bal,
         Err(e) => {
@@ -306,7 +388,7 @@ async fn check_balance(
                 address: address.clone(),
                 balance: "0x0".to_string(),
                 balance_decimal: "0".to_string(),
-                alert_threshold: alert.unwrap_or("0".to_string()),
+                alert_threshold: alert_threshold.to_string(),
                 status: format!("error: {}", e),
             };
             return Ok(warp::reply::with_status(
@@ -314,11 +396,6 @@ async fn check_balance(
                 warp::http::StatusCode::INTERNAL_SERVER_ERROR,
             ));
         }
-    };
-
-    let alert_threshold = match alert {
-        Some(a) => BigUint::from_str(&a).unwrap_or_else(|_| BigUint::from(0u32)),
-        None => BigUint::from(0u32),
     };
 
     let response = CheckBalanceResponse {
@@ -333,7 +410,9 @@ async fn check_balance(
         },
     };
 
-    if alert_threshold > balance {
+    // Must mirror the `status` field above: "balance_low" (alert_threshold >= balance)
+    // maps to an error status so monitors keying off the HTTP code alert at the threshold.
+    if alert_threshold >= balance {
         Ok(warp::reply::with_status(
             warp::reply::json(&response),
             warp::http::StatusCode::INTERNAL_SERVER_ERROR,
@@ -491,6 +570,110 @@ mod tests {
         assert!(result.is_err());
     }
 
+    // 0xde0b6b3a7640000 == 1_000_000_000_000_000_000 (1 ETH in wei)
+    const ONE_ETH_HEX_BODY: &str = r#"{"jsonrpc":"2.0","id":1,"result":"0xde0b6b3a7640000"}"#;
+    const VALID_ADDRESS: &str = "0x0000000000000000000000000000000000000001";
+
+    async fn balance_status(alert: &str) -> warp::http::StatusCode {
+        balance_status_with_body(ONE_ETH_HEX_BODY, Some(alert)).await
+    }
+
+    async fn balance_status_with_body(
+        body: &str,
+        alert: Option<&str>,
+    ) -> warp::http::StatusCode {
+        use warp::Reply;
+        let mut server = Server::new_async().await;
+        server
+            .mock("POST", "/")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(body)
+            .create_async()
+            .await;
+
+        check_balance(
+            Some(server.url()),
+            VALID_ADDRESS.to_string(),
+            alert.map(|a| a.to_string()),
+        )
+        .await
+        .unwrap()
+        .into_response()
+        .status()
+    }
+
+    #[tokio::test]
+    async fn test_check_balance_zero_balance_default_threshold_returns_error() {
+        // Account with no balance and no alert param (threshold defaults to 0):
+        // must NOT return 200. balance 0 <= threshold 0 => balance_low => 500.
+        let body = r#"{"jsonrpc":"2.0","id":1,"result":"0x0"}"#;
+        assert_eq!(
+            balance_status_with_body(body, None).await,
+            warp::http::StatusCode::INTERNAL_SERVER_ERROR
+        );
+    }
+
+    #[tokio::test]
+    async fn test_check_balance_zero_balance_with_threshold_returns_error() {
+        let body = r#"{"jsonrpc":"2.0","id":1,"result":"0x0"}"#;
+        assert_eq!(
+            balance_status_with_body(body, Some("1000000000000000000")).await,
+            warp::http::StatusCode::INTERNAL_SERVER_ERROR
+        );
+    }
+
+    #[tokio::test]
+    async fn test_check_balance_at_threshold_returns_error() {
+        // balance == threshold must be treated as low (HTTP 500), matching the body.
+        assert_eq!(
+            balance_status("1000000000000000000").await,
+            warp::http::StatusCode::INTERNAL_SERVER_ERROR
+        );
+    }
+
+    #[tokio::test]
+    async fn test_check_balance_above_threshold_returns_ok() {
+        assert_eq!(
+            balance_status("999999999999999999").await,
+            warp::http::StatusCode::OK
+        );
+    }
+
+    #[tokio::test]
+    async fn test_check_balance_below_threshold_returns_error() {
+        assert_eq!(
+            balance_status("1000000000000000001").await,
+            warp::http::StatusCode::INTERNAL_SERVER_ERROR
+        );
+    }
+
+    #[tokio::test]
+    async fn test_check_balance_invalid_address_returns_bad_request() {
+        use warp::Reply;
+        let status = check_balance(None, "not-an-address".to_string(), None)
+            .await
+            .unwrap()
+            .into_response()
+            .status();
+        assert_eq!(status, warp::http::StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn test_check_balance_invalid_alert_returns_bad_request() {
+        use warp::Reply;
+        let status = check_balance(
+            None,
+            VALID_ADDRESS.to_string(),
+            Some("not-a-number".to_string()),
+        )
+        .await
+        .unwrap()
+        .into_response()
+        .status();
+        assert_eq!(status, warp::http::StatusCode::BAD_REQUEST);
+    }
+
     #[test]
     fn test_rpc_request_serialization() {
         let request = RpcRequest {
@@ -521,8 +704,49 @@ mod tests {
         let response: BalanceResponse = serde_json::from_str(json).unwrap();
 
         assert_eq!(response.jsonrpc, "2.0");
-        assert_eq!(response.id, 1);
-        assert_eq!(response.result, "0xde0b6b3a7640000");
+        assert_eq!(response.id, Some(1));
+        assert_eq!(response.result.as_deref(), Some("0xde0b6b3a7640000"));
+        assert!(response.error.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_get_balance_rpc_error_with_null_id_surfaced() {
+        // JSON-RPC parse/invalid-request errors carry `id: null`; the error must
+        // still deserialize and surface rather than failing on the null id.
+        let mut server = Server::new_async().await;
+        let mock = server
+            .mock("POST", "/")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(r#"{"jsonrpc":"2.0","id":null,"error":{"code":-32700,"message":"parse error"}}"#)
+            .create_async()
+            .await;
+
+        let result = get_balance(Some(server.url()), "0x123456789".to_string()).await;
+        mock.assert_async().await;
+
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("parse error"));
+    }
+
+    #[tokio::test]
+    async fn test_get_balance_rpc_error_surfaced() {
+        let mut server = Server::new_async().await;
+        let mock = server
+            .mock("POST", "/")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(
+                r#"{"jsonrpc":"2.0","id":1,"error":{"code":-32000,"message":"invalid address"}}"#,
+            )
+            .create_async()
+            .await;
+
+        let result = get_balance(Some(server.url()), "0x123456789".to_string()).await;
+        mock.assert_async().await;
+
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("invalid address"));
     }
 
     #[test]

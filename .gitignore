@@ -1,6 +1,8 @@
 # Rust
 /target/
-Cargo.lock
+
+# Claude Code harness state (transient, per-session)
+.claude/
 
 # Go
 *.exe
