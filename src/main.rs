@@ -18,6 +18,15 @@ fn strip_hex_prefix(s: &str) -> &str {
         .unwrap_or(s)
 }
 
+/// Validate an Ethereum address: `0x` followed by exactly 40 hex digits.
+fn is_valid_eth_address(address: &str) -> bool {
+    let hex = match address.strip_prefix("0x").or_else(|| address.strip_prefix("0X")) {
+        Some(h) => h,
+        None => return false,
+    };
+    hex.len() == 40 && hex.chars().all(|c| c.is_ascii_hexdigit())
+}
+
 #[derive(Serialize)]
 struct RpcRequest {
     jsonrpc: String,
@@ -308,6 +317,23 @@ async fn check_balance(
     address: String,
     alert: Option<String>,
 ) -> Result<impl warp::Reply, warp::Rejection> {
+    // Reject a missing or malformed address up front rather than forwarding it to
+    // the RPC node and surfacing an opaque deserialization error.
+    if !is_valid_eth_address(&address) {
+        let error_response = CheckBalanceResponse {
+            address: address.clone(),
+            balance: "0x0".to_string(),
+            balance_decimal: "0".to_string(),
+            alert_threshold: alert.clone().unwrap_or_else(|| "0".to_string()),
+            status: "error: invalid or missing address (expected 0x + 40 hex digits)"
+                .to_string(),
+        };
+        return Ok(warp::reply::with_status(
+            warp::reply::json(&error_response),
+            warp::http::StatusCode::BAD_REQUEST,
+        ));
+    }
+
     // Parse the alert threshold before doing any work. A malformed value must be
     // rejected loudly — silently defaulting to 0 would permanently disable the alert.
     let alert_threshold = match &alert {
