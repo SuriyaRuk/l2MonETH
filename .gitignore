@@ -1,6 +1,9 @@
 # Rust
 /target/
 
+# Claude Code harness state (transient, per-session)
+.claude/
+
 # Go
 *.exe
 *.exe~
