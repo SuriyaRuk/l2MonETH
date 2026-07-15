@@ -4,14 +4,14 @@ FROM rust:1.82 AS builder
 # Set the working directory inside the container
 WORKDIR /app
 
-# Copy Cargo files for dependency caching
-COPY Cargo.toml  ./
+# Copy Cargo files for dependency caching (lockfile pins exact, MSRV-compatible deps)
+COPY Cargo.toml Cargo.lock ./
 
 # Copy source code
 COPY src/ ./src/
 
-# Build the application in release mode
-RUN cargo build --release
+# Build the application in release mode against the committed lockfile
+RUN cargo build --release --locked
 
 # Use a minimal runtime image
 FROM debian:bookworm-slim
