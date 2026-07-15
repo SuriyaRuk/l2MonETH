@@ -9,6 +9,15 @@ use num_bigint::BigUint;
 use num_traits::Num;
 use std::str::FromStr;
 
+/// Strip an optional hex prefix from a hex string without panicking.
+/// Slicing `s[2..]` blindly panics when the RPC returns a value shorter than
+/// two bytes (e.g. an empty string or a single digit); this handles that safely.
+fn strip_hex_prefix(s: &str) -> &str {
+    s.strip_prefix("0x")
+        .or_else(|| s.strip_prefix("0X"))
+        .unwrap_or(s)
+}
+
 #[derive(Serialize)]
 struct RpcRequest {
     jsonrpc: String,
@@ -52,7 +61,7 @@ async fn get_block_number(rpc_url: Option<String>) -> Result<i64, Box<dyn std::e
         current_time, id, block_response.result
     );
 
-    let block_number = i64::from_str_radix(&block_response.result[2..], 16)?;
+    let block_number = i64::from_str_radix(strip_hex_prefix(&block_response.result), 16)?;
 
     println!(
         "currentTime: {} ID {} Block Number (Decimal): {}",
@@ -98,7 +107,7 @@ async fn get_block_by_tag(
                 current_time, id, tag, number_hex
             );
 
-            let block_number = i64::from_str_radix(&number_hex[2..], 16)?;
+            let block_number = i64::from_str_radix(strip_hex_prefix(number_hex), 16)?;
 
             println!(
                 "currentTime: {} ID {} Block {} Number (Decimal): {}",
@@ -288,7 +297,7 @@ async fn get_balance(
     let body = response.text().await?;
     let balance_response: BalanceResponse = serde_json::from_str(&body)?;
 
-    let balance = BigUint::from_str_radix(&balance_response.result[2..], 16)
+    let balance = BigUint::from_str_radix(strip_hex_prefix(&balance_response.result), 16)
         .map_err(|e| format!("Failed to parse balance hex: {}", e))?;
 
     Ok(balance)
